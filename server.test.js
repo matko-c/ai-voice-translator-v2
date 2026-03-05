@@ -42,6 +42,7 @@ describe('POST /api/translate', () => {
     test('returns parsed JSON for a valid audio request', async () => {
         const geminiResponse = {
             detectedLang: 'English',
+            speakerGender: 'male',
             originalText: 'Hello',
             translatedText: 'Hola'
         };
@@ -60,7 +61,7 @@ describe('POST /api/translate', () => {
         // Simulate Gemini wrapping the JSON in ```json ... ```
         mockGenerateContent.mockResolvedValueOnce({
             response: {
-                text: () => '```json\n{"detectedLang":"French","originalText":"Bonjour","translatedText":"Hello"}\n```',
+                text: () => '```json\n{"detectedLang":"French","speakerGender":"female","originalText":"Bonjour","translatedText":"Hello"}\n```',
             },
         });
 
@@ -71,6 +72,7 @@ describe('POST /api/translate', () => {
         expect(res.statusCode).toBe(200);
         expect(res.body).toEqual({
             detectedLang: 'French',
+            speakerGender: 'female',
             originalText: 'Bonjour',
             translatedText: 'Hello'
         });
@@ -79,6 +81,7 @@ describe('POST /api/translate', () => {
     test('passes audio data and language pair to Gemini', async () => {
         setupSuccessfulTranslation({
             detectedLang: 'English',
+            speakerGender: 'male',
             originalText: 'Hi',
             translatedText: 'Ciao'
         });

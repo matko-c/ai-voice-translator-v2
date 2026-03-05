@@ -60,15 +60,20 @@ let silenceTimer = null;
 let isSpeechDetected = false;
 let animFrameId = null;
 
-const SILENCE_THRESHOLD = 0.015;   // RMS below this = silence
+const SILENCE_THRESHOLD = 0.025;   // RMS below this = silence (raised to avoid background noise false positives)
 const SILENCE_DURATION = 1500;     // ms of silence before we stop recording
-const MIN_RECORDING_MS = 500;      // ignore chunks shorter than this
+const MIN_RECORDING_MS = 1000;     // ignore chunks shorter than this
+const MIN_BLOB_BYTES = 1000;       // ignore audio blobs smaller than ~1KB
 let recordingStartTime = 0;
 
 /* ── Speech Synthesis + Voice Selection ───────────────────── */
 const synth = window.speechSynthesis;
 let cachedVoices = [];
 const PREMIUM_KEYWORDS = ['google', 'premium', 'enhanced', 'natural'];
+
+// Known voice-name hints for gender matching
+const MALE_HINTS = ['male', 'boy', 'david', 'mark', 'daniel', 'james', 'guy', 'thomas', 'luca', 'jorge', 'yuri', 'andrei'];
+const FEMALE_HINTS = ['female', 'girl', 'zira', 'samantha', 'victoria', 'karen', 'moira', 'fiona', 'paulina', 'helena', 'elsa', 'google us english'];
 
 // Load voices reliably (Chrome fires onvoiceschanged async)
 function loadVoices() {
@@ -91,11 +96,21 @@ function loadVoices() {
 loadVoices();
 
 /**
- * Pick the best available voice for a locale.
- * Prioritises voices whose name contains Google / Premium / Enhanced / Natural.
- * Falls back to the first voice matching the language.
+ * Guess gender from a voice name using heuristic keyword matching.
+ * Returns 'male', 'female', or null.
  */
-function getBestVoice(locale) {
+function guessVoiceGender(voiceName) {
+    const n = voiceName.toLowerCase();
+    if (MALE_HINTS.some(h => n.includes(h))) return 'male';
+    if (FEMALE_HINTS.some(h => n.includes(h))) return 'female';
+    return null;
+}
+
+/**
+ * Pick the best available voice for a locale, optionally matching gender.
+ * Priority: premium + gender match > any gender match > premium > first match.
+ */
+function getBestVoice(locale, gender) {
     const langPrefix = locale.split('-')[0];
     // All voices that match the exact locale or at least the language prefix
     const matching = cachedVoices.filter(
@@ -103,12 +118,28 @@ function getBestVoice(locale) {
     );
     if (matching.length === 0) return null;
 
-    // Try to find a premium voice
-    const premium = matching.find(v => {
+    const isPremium = (v) => {
         const name = v.name.toLowerCase();
         return PREMIUM_KEYWORDS.some(kw => name.includes(kw));
-    });
-    return premium || matching[0];
+    };
+    const matchesGender = (v) => guessVoiceGender(v.name) === gender;
+
+    if (gender && gender !== 'unknown') {
+        // 1. Premium + correct gender
+        const premiumGender = matching.find(v => isPremium(v) && matchesGender(v));
+        if (premiumGender) return premiumGender;
+
+        // 2. Any voice with correct gender
+        const anyGender = matching.find(v => matchesGender(v));
+        if (anyGender) return anyGender;
+    }
+
+    // 3. Best premium (gender-agnostic)
+    const premium = matching.find(v => isPremium(v));
+    if (premium) return premium;
+
+    // 4. First available
+    return matching[0];
 }
 
 /* ── Mic / UI State Machine ──────────────────────────────── */
@@ -286,6 +317,12 @@ function startRecording() {
         const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
         recordedChunks = [];
 
+        // Skip tiny blobs that are likely just noise
+        if (blob.size < MIN_BLOB_BYTES) {
+            startRecording();
+            return;
+        }
+
         // Send to backend, and immediately start recording the next chunk
         sendAudioForTranslation(blob);
         startRecording();
@@ -368,11 +405,19 @@ async function sendAudioForTranslation(blob) {
 
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
+            // 422 = Gemini couldn't understand audio (noise, too short, etc.)
+            // Silently continue listening instead of showing a scary error
+            if (res.status === 422) {
+                console.warn('Audio not understood, continuing...', err.details);
+                isTranslating = false;
+                if (isConversationActive) setMicState('listening');
+                return;
+            }
             throw new Error(err.error || `HTTP ${res.status}`);
         }
 
         const data = await res.json();
-        // data = { detectedLang, originalText, translatedText }
+        // data = { detectedLang, speakerGender, originalText, translatedText }
 
         if (!isConversationActive) return;
 
@@ -400,9 +445,9 @@ async function sendAudioForTranslation(blob) {
             dotA.className = 'panel-dot pulsing';
         }
 
-        // Speak the translation
+        // Speak the translation with gender-matched voice
         const targetLangCode = detectedIsA ? chosenB : chosenA;
-        speakTranslation(data.translatedText, LANG_LOCALE[targetLangCode]);
+        speakTranslation(data.translatedText, LANG_LOCALE[targetLangCode], data.speakerGender);
 
     } catch (err) {
         console.error('Translation error:', err);
@@ -433,7 +478,7 @@ function blobToBase64(blob) {
 }
 
 /* ── Speak Translation ───────────────────────────────────── */
-function speakTranslation(text, locale) {
+function speakTranslation(text, locale, gender) {
     isTranslating = false;
     isSpeaking = true;
     setMicState('speaking');
@@ -441,7 +486,7 @@ function speakTranslation(text, locale) {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = locale;
 
-    const voice = getBestVoice(locale);
+    const voice = getBestVoice(locale, gender);
     if (voice) utterance.voice = voice;
 
     utterance.onend = () => {

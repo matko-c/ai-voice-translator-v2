@@ -33,7 +33,7 @@ app.post('/api/translate', async (req, res) => {
         return res.status(400).json({ error: 'Missing required parameters: audio, lang1, lang2' });
     }
 
-    const prompt = `Listen to this audio. The users have selected two languages: ${lang1} and ${lang2}. Detect which of these two languages is being spoken in the audio. Transcribe the audio, and then translate it into the OTHER language. Return ONLY a JSON object with this exact structure: {"detectedLang": "...", "originalText": "...", "translatedText": "..."}`;
+    const prompt = `Listen to this audio. The users have selected two languages: ${lang1} and ${lang2}. Detect which of these two languages is being spoken in the audio. Transcribe the audio, and then translate it into the OTHER language. Also analyze the speaker's voice pitch and tone to infer their apparent gender. Return ONLY a JSON object with this exact structure: {"detectedLang": "...", "speakerGender": "male" | "female" | "unknown", "originalText": "...", "translatedText": "..."}`;
 
     try {
         const result = await model.generateContent([
@@ -51,7 +51,18 @@ app.post('/api/translate', async (req, res) => {
         // Strip markdown code fencing if present (```json ... ```)
         responseText = responseText.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
 
-        const parsed = JSON.parse(responseText);
+        let parsed;
+        try {
+            parsed = JSON.parse(responseText);
+        } catch (parseErr) {
+            // Gemini returned something that isn't valid JSON (e.g. "I cannot understand the audio")
+            console.warn('Gemini returned non-JSON:', responseText);
+            return res.status(422).json({
+                error: 'Could not understand audio. Please speak more clearly.',
+                details: responseText
+            });
+        }
+
         return res.json(parsed);
     } catch (error) {
         console.error('Translation error:', error);
