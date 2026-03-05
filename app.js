@@ -5,15 +5,17 @@
 
 /* ── Language Maps ──────────────────────────────────────── */
 const LANG_NAMES = {
-    en: 'English', es: 'Spanish', fr: 'French', de: 'German',
-    it: 'Italian', pt: 'Portuguese', ja: 'Japanese', ko: 'Korean',
-    zh: 'Chinese', ar: 'Arabic', hi: 'Hindi', ru: 'Russian'
+    ar: 'Arabic', zh: 'Chinese', hr: 'Croatian', en: 'English',
+    fr: 'French', de: 'German', hi: 'Hindi', it: 'Italian',
+    ja: 'Japanese', ko: 'Korean', pt: 'Portuguese', ru: 'Russian',
+    es: 'Spanish', ta: 'Tamil'
 };
 
 const LANG_LOCALE = {
-    en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE',
-    it: 'it-IT', pt: 'pt-BR', ja: 'ja-JP', ko: 'ko-KR',
-    zh: 'zh-CN', ar: 'ar-SA', hi: 'hi-IN', ru: 'ru-RU'
+    ar: 'ar-SA', zh: 'zh-CN', hr: 'hr-HR', en: 'en-US',
+    fr: 'fr-FR', de: 'de-DE', hi: 'hi-IN', it: 'it-IT',
+    ja: 'ja-JP', ko: 'ko-KR', pt: 'pt-BR', ru: 'ru-RU',
+    es: 'es-ES', ta: 'ta-IN'
 };
 
 /* ── DOM Refs ─────────────────────────────────────────────  */
@@ -63,8 +65,51 @@ const SILENCE_DURATION = 1500;     // ms of silence before we stop recording
 const MIN_RECORDING_MS = 500;      // ignore chunks shorter than this
 let recordingStartTime = 0;
 
-/* ── Speech Synthesis ────────────────────────────────────── */
+/* ── Speech Synthesis + Voice Selection ───────────────────── */
 const synth = window.speechSynthesis;
+let cachedVoices = [];
+const PREMIUM_KEYWORDS = ['google', 'premium', 'enhanced', 'natural'];
+
+// Load voices reliably (Chrome fires onvoiceschanged async)
+function loadVoices() {
+    return new Promise((resolve) => {
+        const voices = synth.getVoices();
+        if (voices.length > 0) {
+            cachedVoices = voices;
+            resolve(voices);
+            return;
+        }
+        // Wait for the async event
+        synth.onvoiceschanged = () => {
+            cachedVoices = synth.getVoices();
+            resolve(cachedVoices);
+        };
+    });
+}
+
+// Kick off voice loading immediately
+loadVoices();
+
+/**
+ * Pick the best available voice for a locale.
+ * Prioritises voices whose name contains Google / Premium / Enhanced / Natural.
+ * Falls back to the first voice matching the language.
+ */
+function getBestVoice(locale) {
+    const langPrefix = locale.split('-')[0];
+    // All voices that match the exact locale or at least the language prefix
+    const matching = cachedVoices.filter(
+        v => v.lang === locale || v.lang.startsWith(langPrefix)
+    );
+    if (matching.length === 0) return null;
+
+    // Try to find a premium voice
+    const premium = matching.find(v => {
+        const name = v.name.toLowerCase();
+        return PREMIUM_KEYWORDS.some(kw => name.includes(kw));
+    });
+    return premium || matching[0];
+}
 
 /* ── Mic / UI State Machine ──────────────────────────────── */
 function setMicState(state) {
@@ -387,7 +432,7 @@ function blobToBase64(blob) {
     });
 }
 
-/* ── Speech Synthesis ────────────────────────────────────── */
+/* ── Speak Translation ───────────────────────────────────── */
 function speakTranslation(text, locale) {
     isTranslating = false;
     isSpeaking = true;
@@ -395,10 +440,8 @@ function speakTranslation(text, locale) {
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = locale;
-    const voices = synth.getVoices();
-    const langPrefix = locale.split('-')[0];
-    const voice = voices.find(v => v.lang === locale) ||
-        voices.find(v => v.lang.startsWith(langPrefix));
+
+    const voice = getBestVoice(locale);
     if (voice) utterance.voice = voice;
 
     utterance.onend = () => {
@@ -433,7 +476,3 @@ function showError(msg) {
     }, 3000);
 }
 
-// Pre-load voices (Chrome loads them async)
-if (synth.onvoiceschanged !== undefined) {
-    synth.onvoiceschanged = () => synth.getVoices();
-}
