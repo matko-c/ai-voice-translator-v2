@@ -128,47 +128,20 @@
             <!-- ═══ View: Active Translator ══════════════════ -->
             <div id="viewActive" class="view-active hidden">
 
-                <!-- Language buttons -->
-                <div class="lang-buttons">
-                    <button id="btnLangA" class="lang-btn" aria-pressed="false">
-                        <div class="lang-btn-icon">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                <!-- Conversation toggle -->
+                <div class="toggle-wrap">
+                    <button id="btnToggle" class="btn-toggle">
+                        <div class="btn-toggle-icon">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
                                 <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
                                 <line x1="12" x2="12" y1="19" y2="22" />
                             </svg>
                         </div>
-                        <span class="lang-btn-name" id="btnLangAName">English</span>
-                        <span class="lang-btn-hint">Tap to speak</span>
+                        <span class="btn-toggle-label" id="btnToggleLabel">Start Conversation</span>
                     </button>
-
-                    <div class="lang-arrows">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M5 12h14" />
-                            <path d="m12 5 7 7-7 7" />
-                        </svg>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                            style="transform:rotate(180deg)">
-                            <path d="M5 12h14" />
-                            <path d="m12 5 7 7-7 7" />
-                        </svg>
-                    </div>
-
-                    <button id="btnLangB" class="lang-btn" aria-pressed="false">
-                        <div class="lang-btn-icon">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-                                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                                <line x1="12" x2="12" y1="19" y2="22" />
-                            </svg>
-                        </div>
-                        <span class="lang-btn-name" id="btnLangBName">Spanish</span>
-                        <span class="lang-btn-hint">Tap to speak</span>
-                    </button>
+                    <p class="toggle-pair" id="togglePair">English &#8596; Spanish</p>
                 </div>
 
                 <!-- Translation panels -->

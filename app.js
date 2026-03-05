@@ -1,6 +1,6 @@
 /* ─────────────────────────────────────────────────────────
-   Voxify – Real engine wired to V0 UI
-   Panels are FIXED: left = Language A, right = Language B
+   Voxify – Continuous Audio Translator
+   Uses MediaRecorder + silence detection + Gemini Multimodal API
    ───────────────────────────────────────────────────────── */
 
 /* ── Language Maps ──────────────────────────────────────── */
@@ -10,59 +10,10 @@ const LANG_NAMES = {
     zh: 'Chinese', ar: 'Arabic', hi: 'Hindi', ru: 'Russian'
 };
 
-// BCP-47 locale tags for SpeechRecognition & SpeechSynthesis
 const LANG_LOCALE = {
     en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE',
     it: 'it-IT', pt: 'pt-BR', ja: 'ja-JP', ko: 'ko-KR',
     zh: 'zh-CN', ar: 'ar-SA', hi: 'hi-IN', ru: 'ru-RU'
-};
-
-// Placeholder: "Listening… speak now" in each language
-const PLACEHOLDER_LISTEN = {
-    en: 'Listening… speak now',
-    es: 'Escuchando… habla ahora',
-    fr: 'Écoute… parlez maintenant',
-    de: 'Zuhören… sprechen Sie jetzt',
-    it: 'Ascolto… parla adesso',
-    pt: 'Ouvindo… fale agora',
-    ja: '聞いています…今話してください',
-    ko: '듣고 있어요… 지금 말하세요',
-    zh: '正在听…请现在说话',
-    ar: 'أستمع… تحدث الآن',
-    hi: 'सुन रहा हूं… अभी बोलें',
-    ru: 'Слушаю… говорите сейчас'
-};
-
-// Placeholder: "Translation will appear here" in each language
-const PLACEHOLDER_TRANSLATE = {
-    en: 'Translation will appear here',
-    es: 'La traducción aparecerá aquí',
-    fr: 'La traduction apparaîtra ici',
-    de: 'Die Übersetzung erscheint hier',
-    it: 'La traduzione apparirà qui',
-    pt: 'A tradução aparecerá aqui',
-    ja: '翻訳がここに表示されます',
-    ko: '번역이 여기에 표시됩니다',
-    zh: '翻译将显示在这里',
-    ar: 'ستظهر الترجمة هنا',
-    hi: 'अनुवाद यहां दिखाई देगा',
-    ru: 'Перевод появится здесь'
-};
-
-// Idle placeholder in each language: "Tap the button above to speak"
-const PLACEHOLDER_IDLE = {
-    en: 'Tap the button above to speak',
-    es: 'Toca el botón de arriba para hablar',
-    fr: 'Appuyez sur le bouton ci-dessus pour parler',
-    de: 'Tippen Sie oben auf die Schaltfläche zum Sprechen',
-    it: 'Tocca il pulsante sopra per parlare',
-    pt: 'Toque no botão acima para falar',
-    ja: '上のボタンをタップして話してください',
-    ko: '위 버튼을 눌러 말하세요',
-    zh: '点击上方按钮开始说话',
-    ar: 'اضغط على الزر أعلاه للتحدث',
-    hi: 'बोलने के लिए ऊपर का बटन दबाएं',
-    ru: 'Нажмите кнопку выше, чтобы говорить'
 };
 
 /* ── DOM Refs ─────────────────────────────────────────────  */
@@ -74,79 +25,55 @@ const selB = $('langB');
 const btnStart = $('btnStart');
 const setupWarning = $('setupWarning');
 const setupSummary = $('setupSummary');
-const btnLangA = $('btnLangA');
-const btnLangB = $('btnLangB');
-const btnLangAName = $('btnLangAName');
-const btnLangBName = $('btnLangBName');
-// panelA = left (Language A), panelB = right (Language B)
-const panelA = $('panelSource');   // left
-const panelB = $('panelTarget');   // right
-const dotA = $('dotSource');     // left dot
-const dotB = $('dotTarget');     // right dot
-const labelA = $('labelSource');   // left header text
-const labelB = $('labelTarget');   // right header text
-const textA = $('textSource');    // left body text
-const textB = $('textTarget');    // right body text
+const btnToggle = $('btnToggle');
+const btnToggleLabel = $('btnToggleLabel');
+const togglePair = $('togglePair');
+const panelA = $('panelSource');
+const panelB = $('panelTarget');
+const dotA = $('dotSource');
+const dotB = $('dotTarget');
+const labelA = $('labelSource');
+const labelB = $('labelTarget');
+const textA = $('textSource');
+const textB = $('textTarget');
 const micCircle = $('micCircle');
 const audioBarsEl = $('audioBars');
 const micStatus = $('micStatus');
 const btnReset = $('btnReset');
 
 /* ── App State ───────────────────────────────────────────── */
-let activeLang = null;   // null | 'a' | 'b'
+let isConversationActive = false;
 let isTranslating = false;
 let isSpeaking = false;
 let chosenA = selA.value;
 let chosenB = selB.value;
 
-/* ── Speech APIs ─────────────────────────────────────────── */
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+/* ── Audio Pipeline State ────────────────────────────────── */
+let mediaStream = null;
+let mediaRecorder = null;
+let audioContext = null;
+let analyserNode = null;
+let recordedChunks = [];
+let silenceTimer = null;
+let isSpeechDetected = false;
+let animFrameId = null;
+
+const SILENCE_THRESHOLD = 0.015;   // RMS below this = silence
+const SILENCE_DURATION = 1500;     // ms of silence before we stop recording
+const MIN_RECORDING_MS = 500;      // ignore chunks shorter than this
+let recordingStartTime = 0;
+
+/* ── Speech Synthesis ────────────────────────────────────── */
 const synth = window.speechSynthesis;
-let recognition = null;
-
-if (!SpeechRecognition) {
-    alert('Speech Recognition is not supported in this browser. Please use Chrome or Edge.');
-} else {
-    recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-
-    recognition.onstart = () => setMicState('listening');
-
-    recognition.onspeechstart = () => setMicState('hearing');
-
-    recognition.onspeechend = () => recognition.stop();
-
-    recognition.onresult = async (event) => {
-        const transcript = event.results[0][0].transcript.trim();
-        if (!transcript) { restartListening(); return; }
-        await handleTranslationFlow(transcript);
-    };
-
-    recognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-        if (event.error !== 'no-speech' && event.error !== 'aborted') {
-            showError(event.error);
-        }
-        if (event.error !== 'aborted') setTimeout(restartListening, 1000);
-    };
-
-    recognition.onend = () => {
-        if (activeLang && !isTranslating && !isSpeaking) restartListening();
-    };
-}
 
 /* ── Mic / UI State Machine ──────────────────────────────── */
-// states: 'idle' | 'listening' | 'hearing' | 'translating' | 'speaking'
 function setMicState(state) {
     const bars = audioBarsEl.querySelectorAll('.audio-bar');
 
-    /* Mic circle */
     micCircle.className = 'mic-circle';
     if (state === 'listening' || state === 'translating') micCircle.classList.add('listening');
     if (state === 'hearing' || state === 'speaking') micCircle.classList.add('hearing');
 
-    /* Audio bars */
     bars.forEach((bar, i) => {
         bar.className = 'audio-bar';
         if (state === 'listening' || state === 'translating') {
@@ -160,7 +87,6 @@ function setMicState(state) {
         }
     });
 
-    /* Status text */
     micStatus.className = 'mic-status';
     const statusLabels = {
         idle: 'Idle', listening: 'Listening...', hearing: 'Hearing...',
@@ -171,33 +97,15 @@ function setMicState(state) {
         micStatus.classList.add(state === 'hearing' || state === 'speaking' ? 'hearing' : 'listening');
     }
 
-    /* Panel labels – always fixed to their language */
     labelA.textContent = LANG_NAMES[chosenA];
     labelB.textContent = LANG_NAMES[chosenB];
 
-    /* Panel highlight + dot:
-       Left (A) = source when activeLang=a, target when activeLang=b
-       Right (B) = source when activeLang=b, target when activeLang=a  */
     const isActive = state !== 'idle';
-    const aIsSource = activeLang === 'a';
-
     if (!isActive) {
         panelA.className = 'panel';
         panelB.className = 'panel';
         dotA.className = 'panel-dot';
         dotB.className = 'panel-dot';
-    } else if (aIsSource) {
-        // A button active → A panel is speaking side
-        panelA.className = 'panel source-active';
-        panelB.className = 'panel target-active';
-        dotA.className = 'panel-dot on';
-        dotB.className = 'panel-dot' + (state === 'translating' || state === 'speaking' ? ' pulsing' : '');
-    } else {
-        // B button active → B panel is speaking side
-        panelA.className = 'panel target-active';
-        panelB.className = 'panel source-active';
-        dotA.className = 'panel-dot' + (state === 'translating' || state === 'speaking' ? ' pulsing' : '');
-        dotB.className = 'panel-dot on';
     }
 }
 
@@ -219,161 +127,264 @@ btnStart.addEventListener('click', () => {
     if (chosenA === chosenB) return;
     viewSetup.classList.add('hidden');
     viewActive.classList.remove('hidden');
-    btnLangAName.textContent = LANG_NAMES[chosenA];
-    btnLangBName.textContent = LANG_NAMES[chosenB];
-    resetActiveState();
+    togglePair.textContent = LANG_NAMES[chosenA] + ' \u2194 ' + LANG_NAMES[chosenB];
+    labelA.textContent = LANG_NAMES[chosenA];
+    labelB.textContent = LANG_NAMES[chosenB];
+    textA.textContent = 'Press Start Conversation to begin';
+    textA.className = 'panel-text';
+    textB.textContent = 'Translation will appear here';
+    textB.className = 'panel-text';
+    setMicState('idle');
 });
 
-/* ── Active View ─────────────────────────────────────────── */
-function setIdlePanels() {
-    // Show idle placeholders in each panel's own language
-    textA.textContent = PLACEHOLDER_IDLE[chosenA];
+/* ── Toggle Conversation ─────────────────────────────────── */
+btnToggle.addEventListener('click', async () => {
+    if (isConversationActive) {
+        stopConversation();
+    } else {
+        await startConversation();
+    }
+});
+
+async function startConversation() {
+    try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+        console.error('Microphone access denied:', err);
+        showError('Microphone access denied');
+        return;
+    }
+
+    // Warm up speech synthesis (iOS Safari fix)
+    const warmUp = new SpeechSynthesisUtterance('');
+    synth.speak(warmUp);
+
+    isConversationActive = true;
+    btnToggle.classList.add('active');
+    btnToggleLabel.textContent = 'Stop Conversation';
+
+    // Set up AudioContext + Analyser for silence detection
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    analyserNode = audioContext.createAnalyser();
+    analyserNode.fftSize = 2048;
+    source.connect(analyserNode);
+
+    startRecording();
+}
+
+function stopConversation() {
+    isConversationActive = false;
+    isTranslating = false;
+    isSpeaking = false;
+    btnToggle.classList.remove('active');
+    btnToggleLabel.textContent = 'Start Conversation';
+
+    // Stop the recorder
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        try { mediaRecorder.stop(); } catch (_) { }
+    }
+    mediaRecorder = null;
+    recordedChunks = [];
+
+    // Stop silence detection
+    if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
+    if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+
+    // Close audio context
+    if (audioContext) { audioContext.close(); audioContext = null; }
+
+    // Stop mic stream
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+    }
+
+    synth.cancel();
+    setMicState('idle');
+    textA.textContent = 'Press Start Conversation to begin';
     textA.className = 'panel-text';
-    textB.textContent = PLACEHOLDER_IDLE[chosenB];
+    textB.textContent = 'Translation will appear here';
     textB.className = 'panel-text';
 }
 
-function setListeningPanels(listeningLang) {
-    // listeningLang: 'a' | 'b'
-    if (listeningLang === 'a') {
-        textA.textContent = PLACEHOLDER_LISTEN[chosenA];
-        textA.className = 'panel-text listening';
-        textB.textContent = PLACEHOLDER_TRANSLATE[chosenB];
-        textB.className = 'panel-text';
-    } else {
-        textB.textContent = PLACEHOLDER_LISTEN[chosenB];
-        textB.className = 'panel-text listening';
-        textA.textContent = PLACEHOLDER_TRANSLATE[chosenA];
-        textA.className = 'panel-text';
-    }
-}
+/* ── Recording + Silence Detection ───────────────────────── */
+function startRecording() {
+    if (!isConversationActive || !mediaStream) return;
 
-function resetActiveState() {
-    stopEverything();
-    btnLangA.classList.remove('active');
-    btnLangB.classList.remove('active');
-    btnLangA.setAttribute('aria-pressed', 'false');
-    btnLangB.setAttribute('aria-pressed', 'false');
-    btnLangA.querySelector('.lang-btn-hint').textContent = 'Tap to speak';
-    btnLangB.querySelector('.lang-btn-hint').textContent = 'Tap to speak';
-    setMicState('idle');
-    setIdlePanels();
-}
+    recordedChunks = [];
+    isSpeechDetected = false;
 
-function stopEverything() {
-    activeLang = null;
-    isTranslating = false;
-    isSpeaking = false;
-    if (recognition) { try { recognition.abort(); } catch (_) { } }
-    synth.cancel();
-}
+    // Choose a supported MIME type
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+            ? 'audio/webm'
+            : '';
 
-function activateLang(which) {
-    // iOS Safari blocks SpeechSynthesis if it isn't triggered directly inside
-    // a user-gesture. Fire a silent utterance NOW (while we're still in the
-    // click handler) to unlock the audio context before the async fetch runs.
-    const iosWarmUp = new SpeechSynthesisUtterance('');
-    window.speechSynthesis.speak(iosWarmUp);
+    mediaRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : {});
 
-    stopEverything();
-    activeLang = which;
+    mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+    };
 
-    const isA = which === 'a';
-    btnLangA.classList.toggle('active', isA);
-    btnLangB.classList.toggle('active', !isA);
-    btnLangA.setAttribute('aria-pressed', String(isA));
-    btnLangB.setAttribute('aria-pressed', String(!isA));
-    btnLangA.querySelector('.lang-btn-hint').textContent = isA ? 'Tap to stop' : 'Tap to speak';
-    btnLangB.querySelector('.lang-btn-hint').textContent = isA ? 'Tap to speak' : 'Tap to stop';
+    mediaRecorder.onstop = () => {
+        if (!isConversationActive) return;
 
-    setListeningPanels(which);
-    restartListening();
-}
-
-btnLangA.addEventListener('click', () => {
-    if (activeLang === 'a') { resetActiveState(); } else { activateLang('a'); }
-});
-
-btnLangB.addEventListener('click', () => {
-    if (activeLang === 'b') { resetActiveState(); } else { activateLang('b'); }
-});
-
-btnReset.addEventListener('click', () => {
-    resetActiveState();
-    viewActive.classList.add('hidden');
-    viewSetup.classList.remove('hidden');
-});
-
-/* ── Recognition Helpers ─────────────────────────────────── */
-function restartListening() {
-    if (!activeLang || !recognition) return;
-    const locale = activeLang === 'a' ? LANG_LOCALE[chosenA] : LANG_LOCALE[chosenB];
-    recognition.lang = locale;
-    try { recognition.start(); } catch (e) {
-        if (e.name !== 'InvalidStateError') console.error(e);
-    }
-}
-
-/* ── Translation Flow ────────────────────────────────────── */
-async function handleTranslationFlow(transcript) {
-    if (!activeLang) return;
-    isTranslating = true;
-
-    // Determine source/target based on which button is active
-    const srcCode = activeLang === 'a' ? chosenA : chosenB;
-    const tgtCode = activeLang === 'a' ? chosenB : chosenA;
-    const srcName = LANG_NAMES[srcCode];
-    const tgtName = LANG_NAMES[tgtCode];
-    const tgtLocale = LANG_LOCALE[tgtCode];
-
-    // Fill the speaking side's panel with transcript, other side with "…"
-    if (activeLang === 'a') {
-        textA.textContent = transcript;
-        textA.className = 'panel-text has-content';
-        textB.textContent = '…';
-        textB.className = 'panel-text listening';
-    } else {
-        textB.textContent = transcript;
-        textB.className = 'panel-text has-content';
-        textA.textContent = '…';
-        textA.className = 'panel-text listening';
-    }
-    setMicState('translating');
-
-    try {
-        const translatedText = await fetchTranslation(transcript, srcName, tgtName);
-        if (!activeLang) return;
-
-        // Fill the translation into the OTHER panel
-        if (activeLang === 'a') {
-            textB.textContent = translatedText;
-            textB.className = 'panel-text has-content';
-        } else {
-            textA.textContent = translatedText;
-            textA.className = 'panel-text has-content';
+        const elapsed = Date.now() - recordingStartTime;
+        if (elapsed < MIN_RECORDING_MS || recordedChunks.length === 0 || !isSpeechDetected) {
+            // Too short or no speech detected — restart immediately
+            startRecording();
+            return;
         }
 
-        speakTranslation(translatedText, tgtLocale);
+        const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+        recordedChunks = [];
+
+        // Send to backend, and immediately start recording the next chunk
+        sendAudioForTranslation(blob);
+        startRecording();
+    };
+
+    mediaRecorder.start(250); // collect data in 250ms intervals
+    recordingStartTime = Date.now();
+    setMicState('listening');
+
+    // Start monitoring for silence
+    monitorSilence();
+}
+
+function monitorSilence() {
+    if (!analyserNode || !isConversationActive) return;
+
+    const bufferLength = analyserNode.fftSize;
+    const dataArray = new Uint8Array(bufferLength);
+
+    function check() {
+        if (!isConversationActive) return;
+
+        analyserNode.getByteTimeDomainData(dataArray);
+
+        // Compute RMS
+        let sumSquares = 0;
+        for (let i = 0; i < bufferLength; i++) {
+            const normalized = (dataArray[i] - 128) / 128;
+            sumSquares += normalized * normalized;
+        }
+        const rms = Math.sqrt(sumSquares / bufferLength);
+
+        if (rms > SILENCE_THRESHOLD) {
+            // Sound detected
+            if (!isSpeechDetected) {
+                isSpeechDetected = true;
+                setMicState('hearing');
+            }
+            // Reset silence timer
+            if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+        } else if (isSpeechDetected && !silenceTimer) {
+            // Speech was detected before, now it's silent — start countdown
+            silenceTimer = setTimeout(() => {
+                silenceTimer = null;
+                if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    mediaRecorder.stop();
+                }
+            }, SILENCE_DURATION);
+        }
+
+        animFrameId = requestAnimationFrame(check);
+    }
+
+    animFrameId = requestAnimationFrame(check);
+}
+
+/* ── Send Audio to Backend ───────────────────────────────── */
+async function sendAudioForTranslation(blob) {
+    isTranslating = true;
+    setMicState('translating');
+
+    textA.textContent = '…';
+    textA.className = 'panel-text listening';
+    textB.textContent = '…';
+    textB.className = 'panel-text listening';
+
+    try {
+        // Convert blob to base64
+        const base64 = await blobToBase64(blob);
+
+        const res = await fetch('/api/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                audio: base64,
+                lang1: LANG_NAMES[chosenA],
+                lang2: LANG_NAMES[chosenB]
+            })
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        // data = { detectedLang, originalText, translatedText }
+
+        if (!isConversationActive) return;
+
+        // Determine which panel gets which text
+        // If detected language matches chosenA → original on left, translation on right
+        const detectedIsA = isLangMatch(data.detectedLang, chosenA);
+
+        if (detectedIsA) {
+            textA.textContent = data.originalText;
+            textA.className = 'panel-text has-content';
+            panelA.className = 'panel source-active';
+            dotA.className = 'panel-dot on';
+            textB.textContent = data.translatedText;
+            textB.className = 'panel-text has-content';
+            panelB.className = 'panel target-active';
+            dotB.className = 'panel-dot pulsing';
+        } else {
+            textB.textContent = data.originalText;
+            textB.className = 'panel-text has-content';
+            panelB.className = 'panel source-active';
+            dotB.className = 'panel-dot on';
+            textA.textContent = data.translatedText;
+            textA.className = 'panel-text has-content';
+            panelA.className = 'panel target-active';
+            dotA.className = 'panel-dot pulsing';
+        }
+
+        // Speak the translation
+        const targetLangCode = detectedIsA ? chosenB : chosenA;
+        speakTranslation(data.translatedText, LANG_LOCALE[targetLangCode]);
+
     } catch (err) {
         console.error('Translation error:', err);
-        showError(err.message);
         isTranslating = false;
-        setTimeout(restartListening, 2000);
+        showError(err.message);
     }
 }
 
-async function fetchTranslation(text, sourceName, targetName) {
-    const res = await fetch('/api/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, source_language: sourceName, target_language: targetName })
+function isLangMatch(detectedLang, langCode) {
+    // detectedLang from Gemini could be "English", "en", "en-US", etc.
+    const name = LANG_NAMES[langCode].toLowerCase();
+    const detected = detectedLang.toLowerCase();
+    return detected.includes(name) || detected.includes(langCode) || name.includes(detected);
+}
+
+function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            const dataUrl = reader.result;
+            // Strip the "data:audio/webm;base64," prefix
+            const base64 = dataUrl.split(',')[1];
+            resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
     });
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${res.status}`);
-    }
-    const data = await res.json();
-    return data.text;
 }
 
 /* ── Speech Synthesis ────────────────────────────────────── */
@@ -392,25 +403,33 @@ function speakTranslation(text, locale) {
 
     utterance.onend = () => {
         isSpeaking = false;
-        if (activeLang) restartListening();
+        if (isConversationActive) setMicState('listening');
     };
     utterance.onerror = (e) => {
         console.error('TTS error:', e);
         isSpeaking = false;
-        if (activeLang) restartListening();
+        if (isConversationActive) setMicState('listening');
     };
     synth.speak(utterance);
 }
 
+/* ── Reset / Change Languages ────────────────────────────── */
+btnReset.addEventListener('click', () => {
+    stopConversation();
+    viewActive.classList.add('hidden');
+    viewSetup.classList.remove('hidden');
+});
+
 /* ── Utilities ───────────────────────────────────────────── */
 function showError(msg) {
-    const panel = activeLang === 'a' ? textA : textB;
-    const orig = panel.textContent;
+    const panel = textA;
     panel.style.color = 'var(--destructive)';
     panel.textContent = '⚠ ' + msg;
     setTimeout(() => {
         panel.style.color = '';
-        panel.textContent = orig;
+        if (isConversationActive) {
+            panel.textContent = '';
+        }
     }, 3000);
 }
 

@@ -14,9 +14,9 @@ const __dirname = path.dirname(__filename);
 export const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Enable CORS and JSON parsing
+// Enable CORS and JSON parsing (increased limit for base64 audio)
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // Serve static frontend files from current directory
 app.use(express.static(__dirname));
@@ -25,20 +25,34 @@ app.use(express.static(__dirname));
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 export const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-// Endpoint to handle translation requests
+// Endpoint to handle audio-based translation requests
 app.post('/api/translate', async (req, res) => {
-    const { text, source_language, target_language } = req.body;
+    const { audio, lang1, lang2 } = req.body;
 
-    if (!text || !source_language || !target_language) {
-        return res.status(400).json({ error: 'Missing required parameters: text, source_language, target_language' });
+    if (!audio || !lang1 || !lang2) {
+        return res.status(400).json({ error: 'Missing required parameters: audio, lang1, lang2' });
     }
 
-    const prompt = `You are a professional translator. Translate this exact text: "${text}" from ${source_language} to ${target_language}. Return ONLY the translated string, with no quotes, markdown, or conversational filler.`;
+    const prompt = `Listen to this audio. The users have selected two languages: ${lang1} and ${lang2}. Detect which of these two languages is being spoken in the audio. Transcribe the audio, and then translate it into the OTHER language. Return ONLY a JSON object with this exact structure: {"detectedLang": "...", "originalText": "...", "translatedText": "..."}`;
 
     try {
-        const result = await model.generateContent(prompt);
-        const translatedText = result.response.text().trim();
-        return res.json({ text: translatedText });
+        const result = await model.generateContent([
+            { text: prompt },
+            {
+                inlineData: {
+                    mimeType: 'audio/webm',
+                    data: audio
+                }
+            }
+        ]);
+
+        let responseText = result.response.text().trim();
+
+        // Strip markdown code fencing if present (```json ... ```)
+        responseText = responseText.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+
+        const parsed = JSON.parse(responseText);
+        return res.json(parsed);
     } catch (error) {
         console.error('Translation error:', error);
         res.status(500).json({

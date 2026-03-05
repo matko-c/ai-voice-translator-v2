@@ -799,3 +799,81 @@ select {
     opacity: 0.4;
   }
 }
+
+/* ─── Conversation Toggle Button ─────────────────── */
+.toggle-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 16px 8px;
+}
+
+@media (min-width: 640px) {
+  .toggle-wrap {
+    padding: 20px 24px 8px;
+  }
+}
+
+.btn-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 360px;
+  padding: 18px 28px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-light);
+  background: rgba(78, 78, 104, 0.6);
+  color: var(--fg);
+  font-size: 17px;
+  font-weight: 600;
+  transition: all 0.3s ease;
+  outline: none;
+}
+
+.btn-toggle:hover {
+  border-color: var(--primary-40);
+  background: var(--bg-secondary);
+}
+
+.btn-toggle:focus-visible {
+  box-shadow: 0 0 0 4px var(--primary-30);
+}
+
+.btn-toggle.active {
+  background: var(--destructive);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 4px 20px rgba(224, 96, 80, 0.3);
+}
+
+.btn-toggle.active:hover {
+  opacity: 0.9;
+  background: var(--destructive);
+}
+
+.btn-toggle-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+  transition: opacity 0.3s;
+}
+
+.btn-toggle.active .btn-toggle-icon {
+  opacity: 1;
+}
+
+.btn-toggle-label {
+  letter-spacing: -0.2px;
+}
+
+.toggle-pair {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-dim);
+  opacity: 0.7;
+  letter-spacing: 0.3px;
+}
