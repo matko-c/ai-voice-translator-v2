@@ -24,7 +24,7 @@ app.use(express.static(__dirname));
 
 // Initialize Gemini SDK
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-export const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+export const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
 
 // Endpoint to handle audio-based translation requests
 app.post('/api/translate', async (req, res) => {
