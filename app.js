@@ -483,19 +483,23 @@ async function sendAudioForTranslation(blob) {
         const detectedIsA = isLangMatch(data.detectedLang, chosenA);
 
         if (detectedIsA) {
+            // User spoke Language A (Left)
             textA.textContent = data.originalText;
             textA.className = 'panel-text has-content';
             panelA.className = 'panel source-active';
             dotA.className = 'panel-dot on';
+
             textB.textContent = data.translatedText;
             textB.className = 'panel-text has-content';
             panelB.className = 'panel target-active';
             dotB.className = 'panel-dot pulsing';
         } else {
+            // User spoke Language B (Right)
             textB.textContent = data.originalText;
             textB.className = 'panel-text has-content';
             panelB.className = 'panel source-active';
             dotB.className = 'panel-dot on';
+
             textA.textContent = data.translatedText;
             textA.className = 'panel-text has-content';
             panelA.className = 'panel target-active';
