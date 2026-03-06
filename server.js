@@ -13,6 +13,7 @@ const __dirname = path.dirname(__filename);
 
 export const app = express();
 const PORT = process.env.PORT || 3000;
+let apiCallCount = 0;
 
 // Enable CORS and JSON parsing (increased limit for base64 audio)
 app.use(cors());
@@ -27,14 +28,18 @@ export const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
 // Endpoint to handle audio-based translation requests
 app.post('/api/translate', async (req, res) => {
+    apiCallCount++;
+    console.log(`\n[AUDIT] Request #${apiCallCount} received at ${new Date().toISOString()}. Audio payload size: ${req.body?.audio?.length || 0} bytes.`);
+
     const { audio, lang1, lang2 } = req.body;
 
     if (!audio || !lang1 || !lang2) {
         return res.status(400).json({ error: 'Missing required parameters: audio, lang1, lang2' });
     }
 
-    const prompt = `Listen to this audio. The users have selected two languages: ${lang1} and ${lang2}. Detect which of these two languages is being spoken in the audio. Transcribe the audio, and then translate it into the OTHER language. Also analyze the speaker's voice pitch and tone to infer their apparent gender. Return ONLY a JSON object with this exact structure: {"detectedLang": "...", "speakerGender": "male" | "female" | "unknown", "originalText": "...", "translatedText": "..."}`;
+    const prompt = `Listen to this audio. The users have selected two languages: ${lang1} and ${lang2}. Detect which of these two languages is being spoken in the audio. Transcribe the audio, and then translate it into the OTHER language. Also analyze the speaker's voice pitch and tone to infer their apparent gender as either "male", "female", or "unknown". Return ONLY a valid JSON object with this exact structure: {"detectedLang": "...", "speakerGender": "...", "originalText": "...", "translatedText": "..."}. If the audio is just background noise or too short to understand, return empty strings for the text fields rather than failing.`;
 
+    const startTime = Date.now();
     try {
         const result = await model.generateContent([
             { text: prompt },
@@ -45,8 +50,13 @@ app.post('/api/translate', async (req, res) => {
                 }
             }
         ]);
+        console.log(`[AUDIT TIMER] Gemini responded in ${Date.now() - startTime}ms.`);
 
         let responseText = result.response.text().trim();
+
+        console.log('\n--- [GEMINI RAW RESPONSE] ---');
+        console.log(responseText);
+        console.log('-----------------------------\n');
 
         // Strip markdown code fencing if present (```json ... ```)
         responseText = responseText.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
@@ -55,20 +65,29 @@ app.post('/api/translate', async (req, res) => {
         try {
             parsed = JSON.parse(responseText);
         } catch (parseErr) {
-            // Gemini returned something that isn't valid JSON (e.g. "I cannot understand the audio")
-            console.warn('Gemini returned non-JSON:', responseText);
-            return res.status(422).json({
-                error: 'Could not understand audio. Please speak more clearly.',
-                details: responseText
+            // Gemini returned something that isn't valid JSON
+            console.warn('[SERVER] Gemini returned non-JSON/invalid JSON:', responseText);
+            console.warn('[SERVER] Returning safe fallback JSON.');
+            return res.json({
+                detectedLang: "unknown",
+                speakerGender: "unknown",
+                originalText: "",
+                translatedText: ""
             });
         }
 
         return res.json(parsed);
     } catch (error) {
-        console.error('Translation error:', error);
-        res.status(500).json({
-            error: 'An error occurred during translation.',
-            details: error.message
+        console.log(`[AUDIT TIMER] Gemini failed in ${Date.now() - startTime}ms.`);
+
+        // Log full error for debugging
+        console.error('[SERVER] Gemini API error/Inference failure:', error.message || error);
+        console.warn('[SERVER] Returning safe fallback JSON due to inference error.');
+        return res.json({
+            detectedLang: "unknown",
+            speakerGender: "unknown",
+            originalText: "",
+            translatedText: ""
         });
     }
 });

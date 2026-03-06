@@ -143,15 +143,15 @@ describe('POST /api/translate', () => {
     });
 
     // ── Gemini API error ────────────────────────────────────
-    test('returns 500 when the Gemini API throws an error', async () => {
+    test('returns 422 when the Gemini API throws an error', async () => {
         mockGenerateContent.mockRejectedValueOnce(new Error('Gemini quota exceeded'));
 
         const res = await request(app)
             .post('/api/translate')
             .send({ audio: FAKE_AUDIO, lang1: 'English', lang2: 'German' });
 
-        expect(res.statusCode).toBe(500);
-        expect(res.body.error).toMatch(/error occurred during translation/i);
+        expect(res.statusCode).toBe(422);
+        expect(res.body.error).toMatch(/could not process audio/i);
         expect(res.body.details).toBe('Gemini quota exceeded');
     });
 });

@@ -3,6 +3,9 @@
    Uses MediaRecorder + silence detection + Gemini Multimodal API
    ───────────────────────────────────────────────────────── */
 
+let fetchCount = 0;
+let recentFetches = [];
+
 /* ── Language Maps ──────────────────────────────────────── */
 const LANG_NAMES = {
     ar: 'Arabic', zh: 'Chinese', hr: 'Croatian', en: 'English',
@@ -59,12 +62,15 @@ let recordedChunks = [];
 let silenceTimer = null;
 let isSpeechDetected = false;
 let animFrameId = null;
+let isRecordingToBuffer = false; // Add state variable for speech-end detection
 
 const SILENCE_THRESHOLD = 0.025;   // RMS below this = silence (raised to avoid background noise false positives)
-const SILENCE_DURATION = 1500;     // ms of silence before we stop recording
-const MIN_RECORDING_MS = 1000;     // ignore chunks shorter than this
+const SILENCE_DURATION = 2000;     // ms of silence before we stop recording and send (changed to 2s)
+const MIN_RECORDING_MS = 1000;     // reset back to a smaller number since chunks are dynamically sized based on actual speech duration
+const SPEAKING_VOLUME_THRESHOLD = 0.05; // RMS must hit this once to trigger recording
 const MIN_BLOB_BYTES = 1000;       // ignore audio blobs smaller than ~1KB
 let recordingStartTime = 0;
+let maxVolumeDuringRecording = 0;
 
 /* ── Speech Synthesis + Voice Selection ───────────────────── */
 const synth = window.speechSynthesis;
@@ -166,7 +172,7 @@ function setMicState(state) {
     micStatus.className = 'mic-status';
     const statusLabels = {
         idle: 'Idle', listening: 'Listening...', hearing: 'Hearing...',
-        translating: 'Translating...', speaking: 'Speaking...'
+        translating: 'Processing...', speaking: 'Speaking...'
     };
     micStatus.textContent = statusLabels[state] || 'Idle';
     if (state !== 'idle') {
@@ -246,7 +252,9 @@ async function startConversation() {
     analyserNode.fftSize = 2048;
     source.connect(analyserNode);
 
-    startRecording();
+    // Initial setup: start monitoring for volume spikes
+    setMicState('listening');
+    monitorSilence();
 }
 
 function stopConversation() {
@@ -266,6 +274,7 @@ function stopConversation() {
     // Stop silence detection
     if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
     if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+    isRecordingToBuffer = false;
 
     // Close audio context
     if (audioContext) { audioContext.close(); audioContext = null; }
@@ -290,6 +299,7 @@ function startRecording() {
 
     recordedChunks = [];
     isSpeechDetected = false;
+    maxVolumeDuringRecording = 0; // Reset max volume for this new chunk
 
     // Choose a supported MIME type
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
@@ -308,9 +318,19 @@ function startRecording() {
         if (!isConversationActive) return;
 
         const elapsed = Date.now() - recordingStartTime;
-        if (elapsed < MIN_RECORDING_MS || recordedChunks.length === 0 || !isSpeechDetected) {
-            // Too short or no speech detected — restart immediately
-            startRecording();
+        console.log(`[Mic] Recording stopped. Elapsed: ${elapsed}ms. Chunks: ${recordedChunks.length}. Max Vol: ${maxVolumeDuringRecording.toFixed(4)}`);
+
+        // Reset recording state
+        isRecordingToBuffer = false;
+
+        if (elapsed < MIN_RECORDING_MS) {
+            console.warn(`[Mic] Audio chunk too short (${elapsed}ms < ${MIN_RECORDING_MS}ms), ignoring.`);
+            // Don't auto-restart, let the monitor loop detect speech again
+            return;
+        }
+
+        if (recordedChunks.length === 0) {
+            console.warn(`[Mic] No speech chunks, ignoring.`);
             return;
         }
 
@@ -319,21 +339,18 @@ function startRecording() {
 
         // Skip tiny blobs that are likely just noise
         if (blob.size < MIN_BLOB_BYTES) {
-            startRecording();
+            console.warn(`[Mic] Audio blob too small (${blob.size} bytes), ignoring.`);
             return;
         }
 
-        // Send to backend, and immediately start recording the next chunk
+        // Send to backend, don't restart recording - we're in 'Translating...' state now
         sendAudioForTranslation(blob);
-        startRecording();
     };
 
     mediaRecorder.start(250); // collect data in 250ms intervals
     recordingStartTime = Date.now();
-    setMicState('listening');
-
-    // Start monitoring for silence
-    monitorSilence();
+    console.log(`[Mic] Speech detected - Recording started at ${new Date(recordingStartTime).toISOString()}`);
+    setMicState('hearing');
 }
 
 function monitorSilence() {
@@ -345,6 +362,20 @@ function monitorSilence() {
     function check() {
         if (!isConversationActive) return;
 
+        // Skip audio processing if we are currently translating or speaking
+        if (isTranslating || isSpeaking) {
+            // Cancel any ongoing recording/timers during translation
+            if (isRecordingToBuffer) {
+                if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    mediaRecorder.stop();
+                }
+                isRecordingToBuffer = false;
+            }
+            if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+            animFrameId = requestAnimationFrame(check);
+            return;
+        }
+
         analyserNode.getByteTimeDomainData(dataArray);
 
         // Compute RMS
@@ -355,22 +386,34 @@ function monitorSilence() {
         }
         const rms = Math.sqrt(sumSquares / bufferLength);
 
-        if (rms > SILENCE_THRESHOLD) {
-            // Sound detected
-            if (!isSpeechDetected) {
-                isSpeechDetected = true;
-                setMicState('hearing');
-            }
-            // Reset silence timer
+        // Track max volume if we are actively recording
+        if (isRecordingToBuffer && rms > maxVolumeDuringRecording) {
+            maxVolumeDuringRecording = rms;
+        }
+
+        // TRIGGER START: Sustained loud volume (speaking)
+        if (rms > SPEAKING_VOLUME_THRESHOLD && !isRecordingToBuffer) {
+            // User started talking, begin recording!
+            isRecordingToBuffer = true;
             if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
-        } else if (isSpeechDetected && !silenceTimer) {
-            // Speech was detected before, now it's silent — start countdown
-            silenceTimer = setTimeout(() => {
-                silenceTimer = null;
-                if (mediaRecorder && mediaRecorder.state === 'recording') {
-                    mediaRecorder.stop();
-                }
-            }, SILENCE_DURATION);
+            startRecording();
+        }
+        // MAINTAIN RECORDING: User is talking, don't let silence timers fire
+        else if (isRecordingToBuffer && rms > SILENCE_THRESHOLD) {
+            if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+        }
+        // TRIGGER STOP: Volume fell below silence threshold during an active recording
+        else if (isRecordingToBuffer && rms <= SILENCE_THRESHOLD) {
+            if (!silenceTimer) {
+                // Start a countdown. If they stay quiet for SILENCE_DURATION, stop and send.
+                silenceTimer = setTimeout(() => {
+                    silenceTimer = null;
+                    if (mediaRecorder && mediaRecorder.state === 'recording') {
+                        // The onstop event will handle sending to the backend
+                        mediaRecorder.stop();
+                    }
+                }, SILENCE_DURATION);
+            }
         }
 
         animFrameId = requestAnimationFrame(check);
@@ -381,6 +424,21 @@ function monitorSilence() {
 
 /* ── Send Audio to Backend ───────────────────────────────── */
 async function sendAudioForTranslation(blob) {
+    // Audit Brake Mechanism: Max 5 requests per 10 seconds
+    const now = Date.now();
+    recentFetches.push(now);
+    recentFetches = recentFetches.filter(t => now - t <= 10000); // 10s window
+
+    if (recentFetches.length > 5) {
+        console.error('SPAM DETECTED: Halting recording loop. More than 5 requests fired in 10 seconds.');
+        // Unilaterally abort recording session
+        stopConversation();
+        return; // Kill the cascade right here
+    }
+
+    fetchCount++;
+    console.warn(`[FRONTEND AUDIT] Sending fetch #${fetchCount} to server at ${new Date(now).toISOString()}. Reason: True speech-end detected and threshold met.`);
+
     isTranslating = true;
     setMicState('translating');
 
@@ -392,6 +450,8 @@ async function sendAudioForTranslation(blob) {
     try {
         // Convert blob to base64
         const base64 = await blobToBase64(blob);
+
+        console.log(`[API] Sending audio payload to backend. Size: ~${Math.round(base64.length / 1024)}KB.`);
 
         const res = await fetch('/api/translate', {
             method: 'POST',
@@ -405,15 +465,12 @@ async function sendAudioForTranslation(blob) {
 
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            // 422 = Gemini couldn't understand audio (noise, too short, etc.)
+            // Any error from the translate endpoint = audio issue
             // Silently continue listening instead of showing a scary error
-            if (res.status === 422) {
-                console.warn('Audio not understood, continuing...', err.details);
-                isTranslating = false;
-                if (isConversationActive) setMicState('listening');
-                return;
-            }
-            throw new Error(err.error || `HTTP ${res.status}`);
+            console.warn('Translation request failed, continuing...', res.status, err.details || err.error);
+            isTranslating = false;
+            if (isConversationActive) setMicState('listening');
+            return;
         }
 
         const data = await res.json();
